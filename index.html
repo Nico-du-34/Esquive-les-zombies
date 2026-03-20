@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Esquive les zombies</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1d24;
+      --grid: rgba(255, 255, 255, 0.05);
+      --text: #e7e9ee;
+      --muted: #9ca3af;
+      --danger: #d54a4a;
+      --player: #66d9ef;
+      --zombie: #90be6d;
+      --accent: #f4a261;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at top, #1b2029, var(--bg));
+      color: var(--text);
+      font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+      padding: 16px;
+    }
+
+    .game-shell {
+      width: min(900px, 95vw);
+      background: linear-gradient(180deg, #222834, var(--panel));
+      border: 1px solid #2d3443;
+      border-radius: 14px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+    }
+
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid #2d3443;
+      background: rgba(0, 0, 0, 0.15);
+      font-size: 0.95rem;
+    }
+
+    .hud strong { color: var(--accent); }
+
+    .arena-wrap {
+      position: relative;
+      background:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+        #151922;
+      background-size: 28px 28px;
+    }
+
+    canvas {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 16 / 9;
+      display: block;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      display: none;
+      place-items: center;
+      text-align: center;
+      padding: 24px;
+      background: rgba(7, 8, 12, 0.75);
+      backdrop-filter: blur(2px);
+    }
+
+    .overlay.show { display: grid; }
+
+    .panel {
+      padding: 24px;
+      border-radius: 12px;
+      border: 1px solid #333a49;
+      background: rgba(20, 23, 31, 0.9);
+      max-width: 420px;
+    }
+
+    .panel h1 {
+      margin: 0 0 8px;
+      font-size: 1.7rem;
+      color: var(--danger);
+    }
+
+    .panel p {
+      margin: 8px 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .replay {
+      margin-top: 14px;
+      border: none;
+      background: linear-gradient(180deg, #f58e60, #e76f51);
+      color: #151922;
+      font-weight: 700;
+      padding: 10px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    .replay:hover { filter: brightness(1.05); }
+  </style>
+</head>
+<body>
+  <main class="game-shell">
+    <header class="hud">
+      <div>Score : <strong id="score">0.0s</strong></div>
+      <div>Meilleur score : <strong id="bestScore">0.0s</strong></div>
+      <div>Déplacement : <strong>ZQSD</strong> ou <strong>Flèches</strong></div>
+    </header>
+
+    <section class="arena-wrap">
+      <canvas id="game" width="960" height="540" aria-label="Zone de jeu"></canvas>
+
+      <div class="overlay show" id="overlay">
+        <div class="panel">
+          <h1>Esquive les zombies</h1>
+          <p>Survis le plus longtemps possible.</p>
+          <p>Les zombies apparaissent régulièrement et te poursuivent.</p>
+          <button class="replay" id="replayBtn">Rejouer</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Mini-jeu 2D simple sans bibliothèque externe.
+    (() => {
+      const canvas = document.getElementById('game');
+      const ctx = canvas.getContext('2d');
+      const scoreEl = document.getElementById('score');
+      const bestScoreEl = document.getElementById('bestScore');
+      const overlay = document.getElementById('overlay');
+      const replayBtn = document.getElementById('replayBtn');
+
+      const WIDTH = canvas.width;
+      const HEIGHT = canvas.height;
+      const PLAYER_SPEED = 260; // px/s
+      const ZOMBIE_BASE_SPEED = 55;
+      const ZOMBIE_SPEED_SCALING = 3.5;
+      const ZOMBIE_RADIUS = 13;
+      const PLAYER_RADIUS = 12;
+
+      const keys = new Set();
+      let zombies = [];
+      let player;
+      let running = false;
+      let gameOver = false;
+      let elapsed = 0;
+      let lastTime = 0;
+      let spawnTimer = 0;
+      const spawnDelay = 0.85; // secondes
+
+      let bestScore = Number(localStorage.getItem('bestScore') || 0);
+      bestScoreEl.textContent = `${bestScore.toFixed(1)}s`;
+
+      function reset() {
+        player = { x: WIDTH / 2, y: HEIGHT / 2, radius: PLAYER_RADIUS };
+        zombies = [];
+        elapsed = 0;
+        spawnTimer = 0;
+        gameOver = false;
+        running = true;
+        lastTime = performance.now();
+        scoreEl.textContent = '0.0s';
+        overlay.classList.remove('show');
+        requestAnimationFrame(loop);
+      }
+
+      function spawnZombie() {
+        // Apparition depuis le bord de la carte.
+        const edge = Math.floor(Math.random() * 4);
+        let x = 0;
+        let y = 0;
+
+        if (edge === 0) { x = Math.random() * WIDTH; y = -20; }
+        if (edge === 1) { x = WIDTH + 20; y = Math.random() * HEIGHT; }
+        if (edge === 2) { x = Math.random() * WIDTH; y = HEIGHT + 20; }
+        if (edge === 3) { x = -20; y = Math.random() * HEIGHT; }
+
+        zombies.push({ x, y, radius: ZOMBIE_RADIUS });
+      }
+
+      function update(dt) {
+        if (!running) return;
+
+        elapsed += dt;
+        scoreEl.textContent = `${elapsed.toFixed(1)}s`;
+
+        const moveX = (keys.has('arrowright') || keys.has('d')) - (keys.has('arrowleft') || keys.has('q'));
+        const moveY = (keys.has('arrowdown') || keys.has('s')) - (keys.has('arrowup') || keys.has('z'));
+
+        if (moveX !== 0 || moveY !== 0) {
+          const len = Math.hypot(moveX, moveY) || 1;
+          player.x += (moveX / len) * PLAYER_SPEED * dt;
+          player.y += (moveY / len) * PLAYER_SPEED * dt;
+        }
+
+        // Limite dans l'arène.
+        player.x = Math.max(player.radius, Math.min(WIDTH - player.radius, player.x));
+        player.y = Math.max(player.radius, Math.min(HEIGHT - player.radius, player.y));
+
+        spawnTimer += dt;
+        if (spawnTimer >= spawnDelay) {
+          spawnTimer = 0;
+          spawnZombie();
+        }
+
+        // Les zombies suivent le joueur.
+        const zombieSpeed = ZOMBIE_BASE_SPEED + elapsed * ZOMBIE_SPEED_SCALING;
+        for (const zombie of zombies) {
+          const dx = player.x - zombie.x;
+          const dy = player.y - zombie.y;
+          const dist = Math.hypot(dx, dy) || 1;
+          zombie.x += (dx / dist) * zombieSpeed * dt;
+          zombie.y += (dy / dist) * zombieSpeed * dt;
+
+          if (dist <= zombie.radius + player.radius) {
+            finishGame();
+            return;
+          }
+        }
+      }
+
+      function finishGame() {
+        running = false;
+        gameOver = true;
+
+        if (elapsed > bestScore) {
+          bestScore = elapsed;
+          localStorage.setItem('bestScore', String(bestScore));
+        }
+
+        bestScoreEl.textContent = `${bestScore.toFixed(1)}s`;
+        overlay.classList.add('show');
+      }
+
+      function drawCircle(x, y, r, color) {
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+
+      function render() {
+        ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+        drawCircle(player.x, player.y, player.radius, '#66d9ef');
+        for (const zombie of zombies) {
+          drawCircle(zombie.x, zombie.y, zombie.radius, '#90be6d');
+        }
+
+        if (gameOver) {
+          ctx.fillStyle = '#f6f7f9';
+          ctx.font = '700 30px Segoe UI, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('Tu as été attrapé !', WIDTH / 2, HEIGHT / 2 - 28);
+          ctx.font = '600 20px Segoe UI, sans-serif';
+          ctx.fillText(`Score : ${elapsed.toFixed(1)}s`, WIDTH / 2, HEIGHT / 2 + 8);
+        }
+      }
+
+      function loop(time) {
+        const dt = Math.min((time - lastTime) / 1000, 0.033);
+        lastTime = time;
+
+        update(dt);
+        render();
+
+        if (running) requestAnimationFrame(loop);
+      }
+
+      window.addEventListener('keydown', (event) => {
+        keys.add(event.key.toLowerCase());
+        if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(event.key.toLowerCase())) {
+          event.preventDefault();
+        }
+      });
+
+      window.addEventListener('keyup', (event) => {
+        keys.delete(event.key.toLowerCase());
+      });
+
+      replayBtn.addEventListener('click', reset);
+
+      // Dessin initial au chargement.
+      player = { x: WIDTH / 2, y: HEIGHT / 2, radius: PLAYER_RADIUS };
+      render();
+    })();
+  </script>
+</body>
+</html>
